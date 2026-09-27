@@ -1,0 +1,18 @@
+{
+  "name": "Brace — pennelli di fuoco",
+  "short_name": "Brace",
+  "description": "Pennelli di fuoco vettoriali per disegnare fiamme da tatuaggio ed esportarle in PNG trasparente.",
+  "lang": "it",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1e1b1e",
+  "theme_color": "#1e1b1e",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
