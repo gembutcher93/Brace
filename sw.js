@@ -1,6 +1,6 @@
 // Brace — service worker: funziona anche offline.
 // Quando carichi una nuova versione dell'app, cambia il numero qui sotto.
-const VERSION = 'brace-v2';
+const VERSION = 'brace-v3';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

@@ -221,276 +221,272 @@ function envelope(t, s, closed){
   return 0.12 + 0.88 * Math.min(sm(a), sm(b));
 }
 const presF = (p, s) => s.pressure ? 0.3 + 0.7 * p : 1;
+const PHI = 1.6180339887, IPHI = 0.6180339887;
 const pt = p => f(p[0]) + ' ' + f(p[1]);
 function makeNoise(rng){
   const g = []; for (let i = 0; i < 256; i++) g.push(rng()*2 - 1);
   return x => { const i = Math.floor(x), t = x - i, a = g[i & 255], b = g[(i+1) & 255], s = t*t*(3-2*t); return a + (b-a)*s; };
 }
-const STYLE_W = {anime:.95, cartoon:1.15, manga:.95, real:.7};
-const PROF = {
-  anime:   u => Math.pow(1-u, 1.4) * (1 + 1.2*u),
-  manga:   u => Math.pow(1-u, 1.35) * (1 + 1.2*u),
-  cartoon: u => Math.pow(Math.max(0, 1 - Math.pow(u, 2.6)), 0.55) * (1 + 0.3*u*(1-u)),
-  real:    u => Math.pow(1-u, 1.7) * (1 + u)
+function makePerlin(rng){
+  const perm = []; for (let i = 0; i < 256; i++) perm.push(i);
+  for (let i = 255; i > 0; i--){ const j = Math.floor(rng()*(i+1)); const t = perm[i]; perm[i] = perm[j]; perm[j] = t; }
+  const p = new Uint8Array(512); for (let i = 0; i < 512; i++) p[i] = perm[i & 255];
+  const GX = [1,-1,1,-1,1.41,-1.41,0,0], GY = [1,1,-1,-1,0,0,1.41,-1.41];
+  const fade = t => t*t*t*(t*(t*6-15)+10);
+  return (x, y) => {
+    const fx = Math.floor(x), fy = Math.floor(y), X = fx & 255, Y = fy & 255; x -= fx; y -= fy;
+    const u = fade(x), v = fade(y);
+    const aa = p[p[X]+Y] & 7, ab = p[p[X]+Y+1] & 7, ba = p[p[X+1]+Y] & 7, bb = p[p[X+1]+Y+1] & 7;
+    const g00 = GX[aa]*x + GY[aa]*y, g10 = GX[ba]*(x-1) + GY[ba]*y, g01 = GX[ab]*x + GY[ab]*(y-1), g11 = GX[bb]*(x-1) + GY[bb]*(y-1);
+    const a = g00 + (g10-g00)*u, b = g01 + (g11-g01)*u;
+    return (a + (b-a)*v) * 0.75;
+  };
+}
+// fbm con proporzioni auree: ogni ottava è φ volte più fine e φ volte più debole
+function fbmOf(nf){
+  return (x, y) => { let a = 0, amp = 1, fr = 1, nrm = 0; for (let o = 0; o < 3; o++){ a += amp*nf(x*fr + o*17.3, y*fr - o*9.1); nrm += amp; fr *= PHI; amp *= IPHI; } return a/nrm; };
+}
+const STY = {
+  anime:   {stretch:2.8, ns:1.0, edge:.55, hole:1.0, rexp:1.25, aspect:.34, corners:true, tw:.55},
+  manga:   {stretch:2.8, ns:1.0, edge:.55, hole:1.0, rexp:1.25, aspect:.34, corners:true, tw:.55},
+  cartoon: {stretch:1.7, ns:1.2, edge:.45, hole:.75, rexp:.6, aspect:.34, corners:false, tw:.75},
+  real:    {stretch:3.2, ns:.8, edge:.8, hole:.8, rexp:1.2, aspect:.26, corners:false, tw:.6}
 };
-function genTongues(sp, s, rng){
-  const size = s.size, T = [];
-  const nz = makeNoise(rng), nz2 = makeNoise(rng), nz3 = makeNoise(rng);
-  const spacing = Math.max(size*0.12, size*(1.05 - 0.8*s.density));
-  const ang = s.angle * Math.PI / 180, up = [Math.sin(ang), -Math.cos(ang)];
-  let pos = rng() * spacing * 0.5, alt = 1, guard = 0;
-  while (pos < sp.len && guard++ < 5000){
-    const i = idxAt(sp, pos), q = sp.p[i], tn = sp.tan[i], nr = sp.nor[i];
-    const e = envelope(pos / sp.len, s, sp.closed) * presF(q[2], s);
-    const here = pos;
-    pos += spacing * (0.6 + 0.8 * rng());
-    const r = []; for (let j = 0; j < 14; j++) r.push(rng());
-    if (e < 0.04) continue;
-    let d;
-    if (s.dir === 'up') d = up.slice();
-    else if (s.dir === 'side'){
-      let sg = s.side === 0 ? (r[0] < .5 ? 1 : -1) : s.side;
-      sg *= sp.outSign; d = [nr[0]*sg, nr[1]*sg];
-    } else {
-      alt = -alt; const lat = (0.25 + 0.55*r[0]) * alt;
-      d = [-tn[0] + nr[0]*lat, -tn[1] + nr[1]*lat];
-    }
-    // flusso coerente: le lingue vicine si piegano insieme
-    const lean = nz(here/(size*2.5)) * (0.25 + 0.6*s.wild) + (r[1]-.5)*s.wild*0.35;
-    const a = Math.atan2(d[1], d[0]) + lean;
-    d = [Math.cos(a), Math.sin(a)];
-    const flow = nz2(here/(size*3.2)) >= 0 ? 1 : -1;
-    const hs = r[2] < 0.12 + 0.35*s.wild ? (r[3] < .5 ? -1 : 1) : flow;
-    const hook = s.curl * hs * (0.45 + 0.55*r[4]);
-    const sway = -hook * (0.5 + 0.5*r[5]) * 0.8;
-    const hmod = 0.6 + 0.55*(nz3(here/(size*1.6))*0.5 + 0.5);
-    let L = size * s.height * e * hmod * (0.55 + 0.6*Math.pow(r[6], 1.3));
-    if (r[7] < 0.05 + 0.15*s.wild) L *= 1.35;
-    const W = size * STYLE_W[s.style] * (0.75 + 0.5*r[8]) * Math.sqrt(e);
-    const tg = {bx:q[0], by:q[1], dx:d[0], dy:d[1], L, W, hook, sway, asym: -Math.sign(hook||1)*(0.1 + 0.25*r[9]),
-      lj:[1, 0.88+0.24*r[10], 0.82+0.36*r[11], 0.78+0.44*r[12]], skip:r[13], kids:[]};
-    if (rng() < s.forks && L > size*0.35){
-      const conv = -Math.sign(hook || 1);
-      const mk = side => ({u0: 0.22 + 0.3*rng(), side, rot: 0.5 + 0.45*rng(), Lf: 0.3 + 0.25*rng(), hook: -side*s.curl*(0.7 + 0.5*rng()), sway: side*0.15});
-      tg.kids.push(mk(rng() < .75 ? conv : -conv));
-      if (rng() < s.forks*0.4) tg.kids.push(mk(-tg.kids[0].side));
-    } else { rng(); rng(); rng(); rng(); rng(); }
-    T.push(tg);
-  }
-  return T;
-}
-function bez(P, u){
-  const m = 1-u, a = m*m*m, b = 3*m*m*u, c = 3*m*u*u, d = u*u*u;
-  return [a*P[0][0]+b*P[1][0]+c*P[2][0]+d*P[3][0], a*P[0][1]+b*P[1][1]+c*P[2][1]+d*P[3][1]];
-}
-function tongueGeom(tg, L, W, style){
-  const dx = tg.dx, dy = tg.dy, bx = -dy, by = dx;
-  const P = [
-    [tg.bx - dx*W*0.12, tg.by - dy*W*0.12],
-    [tg.bx + dx*L*0.33 + bx*L*tg.sway*0.35, tg.by + dy*L*0.33 + by*L*tg.sway*0.35],
-    [tg.bx + dx*L*0.68 + bx*L*(tg.hook*0.3 - tg.sway*0.25), tg.by + dy*L*0.68 + by*L*(tg.hook*0.3 - tg.sway*0.25)],
-    [tg.bx + dx*L + bx*L*tg.hook*0.55, tg.by + dy*L + by*L*tg.hook*0.55]
-  ];
-  const n = 22, prof = PROF[style], C = [], Tn = [], left = [], right = [], HW = [];
-  for (let k = 0; k <= n; k++){
-    const u = k/n, c = bez(P, u), a = bez(P, Math.max(0, u-.01)), b = bez(P, Math.min(1, u+.01));
-    let tx = b[0]-a[0], ty = b[1]-a[1]; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
-    const ramp = u < 0.2 ? 0.5 + 0.5*Math.sin(u/0.2*Math.PI/2) : 1;
-    const hw = W/2 * prof(u) * ramp, aL = 1 + (tg.asym||0)*u, aR = 1 - (tg.asym||0)*u;
-    C.push(c); Tn.push([tx, ty]); HW.push(hw);
-    left.push([c[0] - ty*hw*aL, c[1] + tx*hw*aL]); right.push([c[0] + ty*hw*aR, c[1] - tx*hw*aR]);
-  }
-  const poly = left.concat(right.slice(0, n).reverse());
-  let area = 0; for (let i = 0; i < poly.length; i++){ const p = poly[i], q = poly[(i+1) % poly.length]; area += p[0]*q[1] - q[0]*p[1]; }
-  let bb = [1e9,1e9,-1e9,-1e9]; for (const p of poly){ bb[0]=Math.min(bb[0],p[0]); bb[1]=Math.min(bb[1],p[1]); bb[2]=Math.max(bb[2],p[0]); bb[3]=Math.max(bb[3],p[1]); }
-  return {C, T:Tn, HW, left, right, poly, ccw: area >= 0, L, bb};
-}
-function crOpen(P){
-  let d = ''; const n = P.length;
-  for (let i = 0; i < n-1; i++){
-    const p0 = P[Math.max(0,i-1)], p1 = P[i], p2 = P[i+1], p3 = P[Math.min(n-1,i+2)];
-    d += 'C' + pt([p1[0]+(p2[0]-p0[0])/6, p1[1]+(p2[1]-p0[1])/6]) + ' ' + pt([p2[0]-(p3[0]-p1[0])/6, p2[1]-(p3[1]-p1[1])/6]) + ' ' + pt(p2);
-  }
-  return d;
-}
-function crClosed(P){
-  const n = P.length; let d = 'M' + pt(P[0]);
-  for (let i = 0; i < n; i++){
-    const p0 = P[(i-1+n)%n], p1 = P[i], p2 = P[(i+1)%n], p3 = P[(i+2)%n];
-    d += 'C' + pt([p1[0]+(p2[0]-p0[0])/6, p1[1]+(p2[1]-p0[1])/6]) + ' ' + pt([p2[0]-(p3[0]-p1[0])/6, p2[1]-(p3[1]-p1[1])/6]) + ' ' + pt(p2);
-  }
-  return d + 'Z';
-}
-// contorno a due lati: morbido lungo i fianchi, punta affilata (o tonda per il cartoon)
-function sidesD(A, B, rounded, ccw){
-  if (!ccw){ const t = A; A = B; B = t; }
-  if (rounded) return crClosed(A.concat(B.slice(0, -1).reverse()));
-  return 'M' + pt(A[0]) + crOpen(A) + crOpen(B.slice().reverse()) + 'Z';
-}
-const shapeD = (G, rounded) => sidesD(G.left, G.right, rounded, G.ccw);
-function kidGeom(G, kd, style){
-  const n = G.C.length - 1, ki = Math.max(1, Math.round(kd.u0*n)), side = kd.side;
-  const E = side > 0 ? G.left[ki] : G.right[ki], c = G.C[ki];
-  const hwk = Math.hypot(E[0]-c[0], E[1]-c[1]); if (hwk < 0.5) return null;
-  const base = [c[0] + (E[0]-c[0])*0.35, c[1] + (E[1]-c[1])*0.35];
-  const a = Math.atan2(G.T[ki][1], G.T[ki][0]) + side*kd.rot;
-  const kt = {bx:base[0], by:base[1], dx:Math.cos(a), dy:Math.sin(a), sway:kd.sway, hook:kd.hook, asym:0};
-  const L = G.L * kd.Lf; if (L < 1) return null;
-  return tongueGeom(kt, L, hwk*1.7, style);
-}
-function pip(x, y, P){
-  let ins = false;
-  for (let i = 0, j = P.length-1; i < P.length; j = i++){
-    const a = P[i], b = P[j];
-    if ((a[1] > y) !== (b[1] > y) && x < (b[0]-a[0])*(y-a[1])/(b[1]-a[1]) + a[0]) ins = !ins;
-  }
-  return ins;
-}
-// vuoti dentro il corpo della fiamma: lingue che si dividono e si riuniscono
-function genHoles(T, sp, s, rng, shapes){
-  if (s.holes <= 0) return [];
-  const size = s.size, rim = size*0.07, margin = rim + s.outline + size*0.03, H = [];
-  const bandHW = sp.p.map((q, i) => s.size*s.base*0.5*envelope(sp.cum[i]/sp.len, s, sp.closed)*presF(q[2], s));
-  const inside = (x, y) => {
-    for (const G of shapes){ if (x < G.bb[0] || x > G.bb[2] || y < G.bb[1] || y > G.bb[3]) continue; if (pip(x, y, G.poly)) return true; }
-    for (let i = 0; i < sp.n; i += 2){ const q = sp.p[i]; if (Math.hypot(q[0]-x, q[1]-y) < bandHW[i]) return true; }
-    return false;
-  };
-  const tryHole = (cl, wl) => {
-    const m = cl.length - 1;
-    let len = 0; for (let i = 1; i <= m; i++) len += Math.hypot(cl[i][0]-cl[i-1][0], cl[i][1]-cl[i-1][1]);
-    if (len < size*0.2 || Math.max(...wl) < size*0.03) return;
-    const nrm = cl.map((c, i) => { const a = cl[Math.max(0,i-1)], b = cl[Math.min(m,i+1)]; let tx = b[0]-a[0], ty = b[1]-a[1]; const l = Math.hypot(tx,ty)||1; return [-ty/l, tx/l]; });
-    const side = (w, sg) => cl.map((c, i) => [c[0] + nrm[i][0]*w[i]*sg, c[1] + nrm[i][1]*w[i]*sg]);
-    const test = wl.map(w => w + margin);
-    for (const P of [side(test, 1), side(test, -1)]) for (const p of P) if (!inside(p[0], p[1])) return;
-    const ext = [cl[0][0]-(cl[1][0]-cl[0][0])*2, cl[0][1]-(cl[1][1]-cl[0][1])*2];
-    if (!inside(ext[0], ext[1])) return;
-    const mid = cl[m >> 1];
-    for (const h of H) if (Math.hypot(h.mid[0]-mid[0], h.mid[1]-mid[1]) < (h.len + len)*0.45) return;
-    const rimW = wl.map((w, i) => w + rim*Math.sin(Math.PI*i/m)**0.5);
-    H.push({mid, len, hole:[side(wl, 1), side(wl, -1)], rim:[side(rimW, 1), side(rimW, -1)]});
-  };
-  const sample = (G, u) => { const n = G.C.length-1, k = Math.min(n, Math.max(0, Math.round(u*n))); return k; };
-  for (let i = 0; i < T.length; i++){
-    const tg = T[i], G = tg._G;
-    if (G && tg.L > size*0.6 && rng() < s.holes*0.7){
-      const u0 = 0.2 + 0.12*rng(), u1 = u0 + 0.36 + 0.12*rng(), cl = [], wl = [], M = 12;
-      for (let v = 0; v <= M; v++){
-        const k = sample(G, u0 + (u1-u0)*v/M), t = v/M;
-        cl.push(G.C[k]); wl.push(G.HW[k]*0.34*Math.pow(Math.sin(Math.PI*t), 0.8)*(1.15 - 0.5*t));
-      }
-      tryHole(cl, wl);
-    }
-    const tj = T[i+1];
-    if (tj && G && tj._G && tg.L > size*0.45 && tj.L > size*0.45 && rng() < s.holes*0.8){
-      const G2 = tj._G, u0 = 0.14 + 0.08*rng(), u1 = u0 + 0.34, cl = [], wl = [], M = 12;
-      for (let v = 0; v <= M; v++){
-        const t = v/M, k1 = sample(G, u0 + (u1-u0)*t), k2 = sample(G2, u0 + (u1-u0)*t), a = G.C[k1], b = G2.C[k2];
-        cl.push([(a[0]+b[0])/2, (a[1]+b[1])/2]);
-        wl.push(Math.hypot(a[0]-b[0], a[1]-b[1])*0.2*Math.pow(Math.sin(Math.PI*t), 0.85)*(1.1 - 0.4*t));
-      }
-      tryHole(cl, wl);
-    }
-  }
-  return H;
-}
-function bandChunks(sp, s, scale){
-  if (s.base <= 0) return [];
-  const n = sp.n, hw = [];
-  for (let i = 0; i < n; i++) hw[i] = s.size * s.base * 0.5 * scale * envelope(sp.cum[i]/sp.len, s, sp.closed) * presF(sp.p[i][2], s);
-  const N = Math.min(28, Math.max(1, Math.floor(n/2))), m = Math.max(1, Math.ceil(n / N)), out = [];
-  for (let c = 0; c < n; c += m){
-    const end = Math.min(n-1, c+m), idx = [];
-    for (let i = c; i <= end; i++) idx.push(i);
-    if (sp.closed && end === n-1) idx.push(0);
-    if (idx.length < 2) continue;
-    let w = 0; for (const i of idx) w += hw[i]; w = 2*w/idx.length;
-    if (w < 0.4) continue;
-    out.push({d: 'M' + idx.map(i => pt(sp.p[i])).join('L'), w});
+function pathChain(x, y, a0, L, R, hook, swayA, ph, sty, wmul){
+  wmul = wmul || 1;
+  const steps = Math.max(6, Math.min(30, Math.round(L/(R*0.3)))), ds = L/steps, out = [];
+  for (let k = 0; k <= steps; k++){
+    const t = k/steps;
+    out.push([x, y, Math.max(R*0.05, R*Math.pow(1-t, sty.rexp)), (1.15 - sty.tw*t)*wmul]);
+    const ang = a0 + swayA*Math.sin(t*Math.PI*PHI + ph)*t*1.4 + hook*t*t*1.7;
+    x += Math.cos(ang)*ds; y += Math.sin(ang)*ds;
   }
   return out;
 }
-function buildStroke(st){
-  const s = st.s, id = st.id, rng = mulberry(st.seed), sp = spineOf(st);
-  st._sp = sp;
-  const T = genTongues(sp, s, rng);
-  const four = s.tones === 4;
-  const cols = four ? s.colors : [s.colors[0], s.colors[2], s.colors[3]];
-  const LS = four ? [1,.78,.58,.38] : [1,.66,.42], WS = four ? [1,.8,.62,.44] : [1,.7,.48], BS = four ? [1,.78,.56,.34] : [1,.66,.4];
-  const style = s.style, rounded = style === 'cartoon', real = style === 'real';
-  const layers = [], shapes0 = [];
-  for (let k = 0; k < cols.length; k++){
-    let d = '';
-    for (const tg of T){
-      if (k >= 2 && tg.skip < 0.1*k) continue;
-      const L = tg.L * LS[k] * tg.lj[k], W = tg.W * WS[k];
-      if (L < 1 || W < 0.5) continue;
-      const G = tongueGeom(tg, L, W, style);
-      if (k === 0){ tg._G = G; shapes0.push(G); }
-      d += shapeD(G, rounded);
-      for (const kd of tg.kids){ const KG = kidGeom(G, kd, style); if (KG){ d += shapeD(KG, rounded); if (k === 0) shapes0.push(KG); } }
-    }
-    layers.push({d, bands: bandChunks(sp, s, BS[k])});
+function trailChain(sp, pos, L, R, sg, hook, swayA, ph, sty){
+  const steps = Math.max(8, Math.min(40, Math.round(L/(R*0.3)))), out = [];
+  for (let k = 0; k <= steps; k++){
+    const t = k/steps;
+    let P = pos - t*L;
+    P = sp.closed ? ((P % sp.len) + sp.len) % sp.len : Math.max(0, Math.min(sp.len, P));
+    const i = idxAt(sp, P), q = sp.p[i], nr = sp.nor[i];
+    const off = sg*(R*0.15 + L*(0.06 + 0.22*t*t)) + R*swayA*Math.sin(t*Math.PI*PHI + ph) + hook*L*0.12*t*t;
+    out.push([q[0] + nr[0]*off, q[1] + nr[1]*off, Math.max(R*0.05, R*Math.pow(1-t, sty.rexp)), 1.15 - sty.tw*t]);
   }
-  st._hits = T.filter(tg => tg._G).map(tg => tg._G.C[11]);
-  const holes = real ? [] : genHoles(T, sp, s, rng, shapes0);
-  const ow = real ? 0 : s.outline, oc = s.oc, join = rounded ? 'round' : 'miter';
-  const layerSvg = (Ly, fill, stroke, extra) => {
-    let o = '<path d="' + Ly.d + '" fill="' + fill + '"' + (stroke ? ' stroke="' + stroke + '" stroke-width="' + f(2*extra) + '" stroke-linejoin="' + join + '" stroke-miterlimit="2.5"' : '') + '/>';
-    for (const b of Ly.bands) o += '<path d="' + b.d + '" fill="none" stroke="' + (stroke || fill) + '" stroke-width="' + f(b.w + 2*extra) + '" stroke-linecap="round" stroke-linejoin="round"/>';
-    return o;
-  };
-  const g = {defs:'', glow:'', outline:'', f0:'', f1:'', f2:'', f3:'', rims:'', mask:'', holeLines:'', sparks:''};
+  return out;
+}
+// ORDINE: scheletro delle lingue. Posizioni e altezze seguono la sequenza aurea: distribuite ma mai regolari
+function genSkeleton(sp, s, rng, sty){
+  const size = s.size, chains = [], tips = [];
+  const nz = makeNoise(rng), g0 = rng(), g1 = rng();
+  const spacing = Math.max(size*0.15, size*(1.1 - 0.75*s.density));
+  const N = Math.max(1, Math.round(sp.len/spacing));
+  const ang = s.angle*Math.PI/180, up = [Math.sin(ang), -Math.cos(ang)];
+  let alt = 1;
+  for (let i = 0; i < N; i++){
+    const jit = (((g0 + i*IPHI) % 1) - 0.5)*0.9;
+    let pos = (i + 0.5 + jit)*sp.len/N;
+    pos = sp.closed ? ((pos % sp.len) + sp.len) % sp.len : Math.max(0, Math.min(sp.len, pos));
+    const k = idxAt(sp, pos), q = sp.p[k], nr = sp.nor[k];
+    const e = envelope(pos/sp.len, s, sp.closed)*presF(q[2], s);
+    const hr = (g1 + i*PHI*PHI) % 1;
+    const grp = 0.6 + 0.5*(nz(pos/(size*2.2))*0.5 + 0.5);
+    const L = size*s.height*e*grp*(0.3 + 1.1*Math.pow(hr, 1.8));
+    const r = [rng(), rng(), rng(), rng(), rng(), rng()];
+    if (e < 0.05 || L < size*0.08) continue;
+    const R = Math.max(size*0.1, L*sty.aspect*(0.8 + 0.4*r[0]))*Math.min(1.25, Math.sqrt(e) + 0.2);
+    const lean = nz(pos/(size*2.6) + 40)*(0.2 + 0.5*s.wild);
+    const flow = nz(pos/(size*3.3) + 90) >= 0 ? 1 : -1;
+    const hs = r[1] < 0.15 + 0.35*s.wild ? (r[2] < .5 ? -1 : 1) : flow;
+    const hook = s.curl*hs*(0.5 + 0.6*r[3]);
+    const swayA = (0.15 + 0.45*s.wild)*(0.6 + 0.6*r[4]);
+    const ph = r[5]*6.283;
+    let chain;
+    if (s.dir === 'trail'){ alt = -alt; chain = trailChain(sp, pos, L, R, alt, hook, swayA, ph, sty); }
+    else {
+      let d;
+      if (s.dir === 'up') d = up;
+      else { let sg = s.side === 0 ? (r[0] < .5 ? 1 : -1) : s.side; sg *= sp.outSign; d = [nr[0]*sg, nr[1]*sg]; }
+      const a0 = Math.atan2(d[1], d[0]) + lean;
+      chain = pathChain(q[0] - Math.cos(a0)*R*0.4, q[1] - Math.sin(a0)*R*0.4, a0, L, R, hook, swayA, ph, sty);
+    }
+    chains.push(chain); tips.push(chain);
+    if (rng() < s.forks && L > size*0.45){
+      const t0 = 0.3 + 0.25*rng(), idx = Math.round(t0*(chain.length-1));
+      const c = chain[idx], cn = chain[Math.min(chain.length-1, idx+1)];
+      const side = rng() < .7 ? -Math.sign(hook || 1) : Math.sign(hook || 1);
+      const a = Math.atan2(cn[1]-c[1], cn[0]-c[0]) + side*(0.45 + 0.4*rng());
+      const kid = pathChain(c[0], c[1], a, L*IPHI*IPHI*(1 + 0.4*rng()), c[2]*0.85, -side*s.curl*(0.7 + 0.5*rng()), swayA*0.7, rng()*6.28, sty);
+      chains.push(kid); tips.push(kid);
+    } else { rng(); rng(); rng(); rng(); rng(); }
+  }
+  // CAOS: brandelli che si staccano dalle punte
+  const nE = Math.round(tips.length*s.sparks*1.2);
+  for (let j = 0; j < nE && tips.length; j++){
+    const ch = tips[Math.floor(rng()*tips.length)], a = ch[ch.length-1], b = ch[ch.length-2] || a;
+    const an = Math.atan2(a[1]-b[1], a[0]-b[0]) + (rng()-.5)*0.9, gap = size*(0.12 + 0.45*rng());
+    chains.push(pathChain(a[0] + Math.cos(an)*gap, a[1] + Math.sin(an)*gap, an, size*(0.12 + 0.3*rng()), size*(0.045 + 0.05*rng()), (rng()-.5)*1.6, 0.3, rng()*6, sty, 0.95));
+  }
+  if (s.base > 0){
+    const bc = [];
+    for (let i = 0; i < sp.n; i++){ const q = sp.p[i]; bc.push([q[0], q[1], Math.max(0.01, size*s.base*0.5*envelope(sp.cum[i]/sp.len, s, sp.closed)*presF(q[2], s)), 1.0]); }
+    if (sp.closed) bc.push(bc[0]);
+    bc.base = true; chains.push(bc);
+  }
+  return chains;
+}
+function fireField(st, draft){
+  const s = st.s, rng = mulberry(st.seed), sp = spineOf(st), sty = STY[s.style], size = s.size;
+  st._sp = sp;
+  const chains = genSkeleton(sp, s, rng, sty);
+  st._hits = []; for (const ch of chains) if (!ch.base) for (let i = 0; i < ch.length; i += 3) st._hits.push(ch[i]);
+  const nf = makePerlin(rng), fbm = fbmOf(nf);
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const ch of chains) for (const p of ch){ x0 = Math.min(x0, p[0]-p[2]); y0 = Math.min(y0, p[1]-p[2]); x1 = Math.max(x1, p[0]+p[2]); y1 = Math.max(y1, p[1]+p[2]); }
+  const area = Math.max(1, (x1-x0)*(y1-y0));
+  const h = Math.max(size/(draft ? 8 : 14), Math.sqrt(area/(draft ? 40000 : 180000)));
+  x0 -= h*3; y0 -= h*3; x1 += h*3; y1 += h*3;
+  const nx = Math.ceil((x1-x0)/h) + 1, ny = Math.ceil((y1-y0)/h) + 1, NN = nx*ny;
+  const D = new Float32Array(NN), FX = new Float32Array(NN), FY = new Float32Array(NN);
+  const tmp = new Float32Array(NN), tdx = new Float32Array(NN), tdy = new Float32Array(NN), touched = [];
+  for (const ch of chains){
+    touched.length = 0;
+    for (let k = 0; k < ch.length - 1; k++){
+      const a = ch[k], b = ch[k+1], R = Math.max(a[2], b[2]);
+      const sx = b[0]-a[0], sy = b[1]-a[1], sl2 = sx*sx + sy*sy || 1e-9, sl = Math.sqrt(sl2);
+      const i0 = Math.max(0, Math.floor((Math.min(a[0], b[0]) - R - x0)/h)), i1 = Math.min(nx-1, Math.ceil((Math.max(a[0], b[0]) + R - x0)/h));
+      const j0 = Math.max(0, Math.floor((Math.min(a[1], b[1]) - R - y0)/h)), j1 = Math.min(ny-1, Math.ceil((Math.max(a[1], b[1]) + R - y0)/h));
+      for (let j = j0; j <= j1; j++){
+        const y = y0 + j*h;
+        for (let i = i0; i <= i1; i++){
+          const x = x0 + i*h;
+          let t = ((x-a[0])*sx + (y-a[1])*sy)/sl2; t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const rr = a[2] + (b[2]-a[2])*t, dx = x - (a[0] + sx*t), dy = y - (a[1] + sy*t), d2 = dx*dx + dy*dy;
+          if (d2 >= rr*rr) continue;
+          const xx = d2/(rr*rr), kk = (1-xx)*(1-xx)*(a[3] + (b[3]-a[3])*t), c = j*nx + i;
+          if (kk > tmp[c]){ if (tmp[c] === 0) touched.push(c); tmp[c] = kk; tdx[c] = sx/sl; tdy[c] = sy/sl; }
+        }
+      }
+    }
+    const useDir = !ch.base;
+    for (const c of touched){ D[c] += tmp[c]; if (useDir){ FX[c] += tdx[c]*tmp[c]; FY[c] += tdy[c]*tmp[c]; } tmp[c] = 0; }
+  }
+  const ang = s.angle*Math.PI/180, defDir = s.dir === 'up' ? [Math.sin(ang), -Math.cos(ang)] : [0, -1];
+  const S = size*sty.ns, str = sty.stretch, chaos = s.wild;
+  const edgeA = sty.edge*(0.35 + 0.9*chaos), holeA = s.holes*sty.hole;
+  for (let c = 0; c < NN; c++){
+    const v0 = D[c]; if (v0 < 0.01) continue;
+    const i = c % nx, j = (c - i)/nx, x = x0 + i*h, y = y0 + j*h;
+    let dx = FX[c], dy = FY[c]; const l = Math.hypot(dx, dy);
+    if (l < 1e-6){ dx = defDir[0]; dy = defDir[1]; } else { dx /= l; dy /= l; }
+    const u = (x*dx + y*dy)/(S*str), v = (-x*dy + y*dx)/S;
+    const wu = fbm(u*0.7 + 3.1, v*0.7 + 7.7)*chaos*1.6, wv = fbm(u*0.7 - 5.3, v*0.7 + 1.9)*chaos*1.6;
+    const n = fbm(u + wu, v + wv);
+    const rn = 1 - Math.min(1, Math.abs(fbm(u*1.2 + wu + 21, v*1.2 + wv - 13))*2.4);
+    let val = v0*(1 + n*edgeA);
+    val -= holeA*rn*rn*Math.min(val, 1.2)*0.95;
+    D[c] = val;
+  }
+  return {F:D, nx, ny, x0, y0, h};
+}
+// marching squares → anelli chiusi
+function contour(G, t){
+  const {F, nx, ny, x0, y0, h} = G, pts = new Map(), adj = new Map();
+  const H = (i, j) => { const k = (j*nx + i)*2; if (!pts.has(k)){ const a = F[j*nx+i], b = F[j*nx+i+1]; pts.set(k, [x0 + h*(i + (t-a)/(b-a)), y0 + h*j]); } return k; };
+  const V = (i, j) => { const k = (j*nx + i)*2 + 1; if (!pts.has(k)){ const a = F[j*nx+i], b = F[(j+1)*nx+i]; pts.set(k, [x0 + h*i, y0 + h*(j + (t-a)/(b-a))]); } return k; };
+  const link = (a, b) => { (adj.get(a) || adj.set(a, []).get(a)).push(b); (adj.get(b) || adj.set(b, []).get(b)).push(a); };
+  for (let j = 0; j < ny-1; j++) for (let i = 0; i < nx-1; i++){
+    const a = F[j*nx+i], b = F[j*nx+i+1], c = F[(j+1)*nx+i+1], d = F[(j+1)*nx+i];
+    const id = (a > t ? 8 : 0) | (b > t ? 4 : 0) | (c > t ? 2 : 0) | (d > t ? 1 : 0);
+    if (id === 0 || id === 15) continue;
+    const T = () => H(i, j), B = () => H(i, j+1), L = () => V(i, j), R = () => V(i+1, j);
+    switch (id){
+      case 1: case 14: link(L(), B()); break;
+      case 2: case 13: link(B(), R()); break;
+      case 3: case 12: link(L(), R()); break;
+      case 4: case 11: link(T(), R()); break;
+      case 6: case 9: link(T(), B()); break;
+      case 7: case 8: link(L(), T()); break;
+      case 5: if ((a+b+c+d)/4 > t){ link(L(), T()); link(B(), R()); } else { link(T(), R()); link(L(), B()); } break;
+      case 10: if ((a+b+c+d)/4 > t){ link(T(), R()); link(L(), B()); } else { link(L(), T()); link(B(), R()); } break;
+    }
+  }
+  const seen = new Set(), loops = [];
+  for (const start of adj.keys()){
+    if (seen.has(start)) continue;
+    const loop = []; let prev = -1, cur = start;
+    while (cur !== undefined && !seen.has(cur)){
+      seen.add(cur); loop.push(pts.get(cur));
+      const nb = adj.get(cur); const nxt = nb[0] !== prev ? nb[0] : nb[1];
+      prev = cur; cur = nxt;
+    }
+    if (loop.length > 2) loops.push(loop);
+  }
+  return loops;
+}
+function loopD(P, corners, h){
+  let n = P.length;
+  let area = 0; for (let i = 0; i < n; i++){ const a = P[i], b = P[(i+1)%n]; area += a[0]*b[1] - b[0]*a[1]; }
+  area /= 2; if (Math.abs(area) < h*h*1.2) return '';
+  const Q = []; for (let i = 0; i < n; i++){ const p = P[i], q = P[(i+1)%n]; if (!Q.length || Math.hypot(p[0]-Q[Q.length-1][0], p[1]-Q[Q.length-1][1]) > h*0.3) Q.push(p); }
+  n = Q.length; if (n < 3) return '';
+  let S = Q.map((p, i) => { const a = Q[(i-1+n)%n], b = Q[(i+1)%n]; return [(a[0] + 2*p[0] + b[0])/4, (a[1] + 2*p[1] + b[1])/4]; });
+  S = S.map((p, i) => { const a = S[(i-1+n)%n], b = S[(i+1)%n]; return [(a[0] + 2*p[0] + b[0])/4, (a[1] + 2*p[1] + b[1])/4]; });
+  S = S.map((p, i) => { const a = S[(i-1+n)%n], b = S[(i+1)%n]; return [(a[0] + 2*p[0] + b[0])/4, (a[1] + 2*p[1] + b[1])/4]; });
+  const sgn = area > 0 ? 1 : -1, cor = new Array(n).fill(false);
+  if (corners && n > 6){
+    for (let i = 0; i < n; i++){
+      const a = S[(i-2+n)%n], p = S[i], b = S[(i+2)%n];
+      const ux = p[0]-a[0], uy = p[1]-a[1], vx = b[0]-p[0], vy = b[1]-p[1];
+      const cr = ux*vy - uy*vx, dt = ux*vx + uy*vy, turn = Math.atan2(cr, dt);
+      if (Math.abs(turn) > 0.9 && Math.sign(cr) === sgn){
+        const pr = S[(i-1+n)%n], nx2 = S[(i+1)%n];
+        if (Math.abs(turn) >= Math.abs(Math.atan2((p[0]-pr[0])*(nx2[1]-p[1]) - (p[1]-pr[1])*(nx2[0]-p[0]), (p[0]-pr[0])*(nx2[0]-p[0]) + (p[1]-pr[1])*(nx2[1]-p[1]))) * 0.5){
+          cor[i] = true;
+          const mx = (a[0]+b[0])/2, my = (a[1]+b[1])/2;
+          S[i] = [p[0] + (p[0]-mx)*0.6, p[1] + (p[1]-my)*0.6];
+        }
+      }
+    }
+    for (let i = 0; i < n; i++) if (cor[i] && cor[(i+1)%n]) cor[(i+1)%n] = false;
+  }
+  let d = 'M' + pt(S[0]);
+  for (let i = 0; i < n; i++){
+    const i1 = (i+1)%n, p1 = S[i], p2 = S[i1];
+    const p0 = cor[i] ? p1 : S[(i-1+n)%n], p3 = cor[i1] ? p2 : S[(i+2)%n];
+    d += 'C' + pt([p1[0] + (p2[0]-p0[0])/6, p1[1] + (p2[1]-p0[1])/6]) + ' ' + pt([p2[0] - (p3[0]-p1[0])/6, p2[1] - (p3[1]-p1[1])/6]) + ' ' + pt(p2);
+  }
+  return d + 'Z';
+}
+function buildStroke(st){
+  const s = st.s, id = st.id, four = s.tones === 4;
+  const cols = four ? s.colors : [s.colors[0], s.colors[2], s.colors[3]];
+  const T0 = 0.2, TH = four ? [T0, T0*PHI, T0*PHI*PHI, T0*PHI*PHI*PHI] : [T0, T0*Math.pow(PHI, 1.5), T0*PHI*PHI*PHI];
+  const G = fireField(st, !!st._draft);
+  const style = s.style, sty = STY[style], real = style === 'real';
+  const Ls = TH.map(t => contour(G, t).map(l => loopD(l, sty.corners, G.h)).join(''));
+  const ow = real ? 0 : s.outline, oc = s.oc, join = sty.corners ? 'miter' : 'round';
+  const g = {defs:'', glow:'', outline:'', f0:'', f1:'', f2:'', f3:'', sparks:''};
+  const P = (d, fill, extra) => d ? '<path d="' + d + '" fill="' + fill + '" fill-rule="evenodd"' + extra + '/>' : '';
   if (s.glow || real){
     g.defs += '<filter id="gl' + id + '" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="' + f(s.size*0.32) + '"/></filter>';
-    g.glow = '<g filter="url(#gl' + id + ')" opacity="' + (real ? .7 : .5) + '">' + layerSvg(layers[0], cols[Math.min(1, cols.length-1)], null, 0) + '</g>';
+    g.glow = '<g filter="url(#gl' + id + ')" opacity="' + (real ? .7 : .55) + '">' + P(Ls[0], cols[Math.min(1, cols.length-1)], '') + '</g>';
   }
-  if (ow > 0) g.outline = layerSvg(layers[0], oc, oc, ow);
-  const BL = [.09,.07,.05,.035], OP = [.85,.9,.95,1];
-  for (let k = 0; k < layers.length; k++){
+  if (ow > 0) g.outline = P(Ls[0], oc, ' stroke="' + oc + '" stroke-width="' + f(2*ow) + '" stroke-linejoin="' + join + '" stroke-miterlimit="3"');
+  const BL = [.07,.055,.04,.03];
+  for (let k = 0; k < Ls.length; k++){
     let o = '';
-    if (s.inner && k > 0 && ow > 0) o += layerSvg(layers[k], oc, oc, ow*0.5);
-    o += layerSvg(layers[k], cols[k], null, 0);
+    if (s.inner && k > 0 && ow > 0) o += '<path d="' + Ls[k] + '" fill="none" stroke="' + oc + '" stroke-width="' + f(ow) + '" stroke-linejoin="' + join + '" stroke-miterlimit="3"/>';
+    o += P(Ls[k], cols[k], '');
     if (real){
-      g.defs += '<filter id="r' + id + '_' + k + '" x="-40%" y="-40%" width="180%" height="180%"><feTurbulence type="fractalNoise" baseFrequency="' + (1/(s.size*0.8)).toFixed(4) + '" numOctaves="2" seed="' + (st.seed % 997) + '" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="' + f(s.size*0.3) + '" xChannelSelector="R" yChannelSelector="G" result="dd"/><feGaussianBlur in="dd" stdDeviation="' + f(s.size*BL[k]) + '"/></filter>';
-      o = '<g filter="url(#r' + id + '_' + k + ')" opacity="' + OP[k] + '">' + o + '</g>';
+      g.defs += '<filter id="r' + id + '_' + k + '" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="' + f(s.size*BL[k]) + '"/></filter>';
+      o = '<g filter="url(#r' + id + '_' + k + ')">' + o + '</g>';
     }
     g['f' + k] = o;
   }
-  for (const h of holes){
-    const hd = sidesD(h.hole[0], h.hole[1], rounded, true), rd = sidesD(h.rim[0], h.rim[1], rounded, true);
-    g.rims += '<path d="' + rd + '" fill="' + cols[0] + '"/>';
-    g.mask += '<path d="' + hd + '" fill="#000"/>';
-    if (ow > 0) g.holeLines += '<path d="' + hd + '" fill="none" stroke="' + oc + '" stroke-width="' + f(ow) + '" stroke-linejoin="' + join + '" stroke-miterlimit="2.5"/>';
-  }
-  const nS = Math.round(T.length * s.sparks * 1.5);
-  if (nS > 0 && T.length){
-    let o = '';
-    const light = [cols[cols.length-1], cols[cols.length-2]];
-    for (let j = 0; j < nS; j++){
-      const tg = T[Math.floor(rng()*T.length)];
-      const tip = tg._G ? tg._G.C[tg._G.C.length-1] : [tg.bx, tg.by];
-      const far = tg.L*(0.1 + 0.6*rng()), lat = (rng()-.5)*tg.L*0.7;
-      const x = tip[0] + tg.dx*far - tg.dy*lat, y = tip[1] + tg.dy*far + tg.dx*lat;
-      const sz = s.size * (0.05 + 0.1*rng());
-      const a = Math.atan2(tg.dy, tg.dx) + (rng()-.5)*1.0, ux = Math.cos(a), uy = Math.sin(a);
-      const col = style === 'manga' ? cols[0] : light[rng() < .55 ? 0 : 1];
-      const st2 = ow > 0 ? ' stroke="' + oc + '" stroke-width="' + f(ow*0.8) + '" stroke-linejoin="' + join + '"' : '';
-      const hk = (rng() < .5 ? -1 : 1)*(0.3 + 0.5*rng());
-      if (style === 'anime' || style === 'manga'){
-        const G = tongueGeom({bx:x, by:y, dx:ux, dy:uy, sway:-hk*0.6, hook:hk, asym:0}, sz*3.2, sz*1.3, style);
-        o += '<path d="' + shapeD(G, false) + '" fill="' + col + '"' + st2 + '/>';
-      } else {
-        o += '<circle cx="' + f(x) + '" cy="' + f(y) + '" r="' + f(sz*0.6) + '" fill="' + col + '"' + st2 + (real ? ' opacity=".85"' : '') + '/>';
-      }
-    }
-    g.sparks = o;
-  }
   return g;
 }
-const PASSES_IN = ['glow','outline','f0','f1','f2','f3','rims'], PASSES_OUT = ['holeLines','sparks'];
-const PASSES = PASSES_IN.concat(PASSES_OUT);
+const PASSES = ['glow','outline','f0','f1','f2','f3','sparks'];
 // ================= FINE GEOMETRIA =================
 
 const $ = s => document.querySelector(s);
@@ -506,7 +502,7 @@ const PALS = [
   ['Viola', ['#2c0b4d','#6d23b8','#c05cff','#f7e0ff']],
   ['Inchiostro', ['#141414','#f6f6f6','#141414','#f6f6f6']]
 ];
-const DEF = {style:'anime', dir:'up', angle:0, side:1, tones:4, colors: PALS[0][1].slice(), size:120, height:1.6, density:.5, wild:.4, curl:.65, forks:.4, holes:.55, base:.55, taper:.45, outline:3, oc:'#1c0906', inner:false, sparks:.25, glow:false, pressure:true};
+const DEF = {style:'anime', dir:'up', angle:0, side:1, tones:4, colors: PALS[0][1].slice(), size:120, height:2.4, density:.5, wild:.5, curl:.6, forks:.4, holes:.6, base:.35, taper:.45, outline:3, oc:'#1c0906', inner:false, sparks:.3, glow:false, pressure:true};
 const ARTS = {ipad:[2048,2732], a4:[2480,3508], sq:[2048,2048], land:[2732,2048]};
 
 let strokes = [], nextId = 1, selected = null, defaults = clone(DEF), seedNext = rand32();
@@ -522,7 +518,7 @@ let saveT = 0;
 function persist(){
   clearTimeout(saveT);
   saveT = setTimeout(() => {
-    const data = {strokes: strokes.map(pack), defaults, art, opts, nextId, ref: {op:ref.op, show:ref.show}};
+    const data = {dv:3, strokes: strokes.map(pack), defaults, art, opts, nextId, ref: {op:ref.op, show:ref.show}};
     try { localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
     try { if (ref.src) localStorage.setItem(KEY+'-ref', ref.src); else localStorage.removeItem(KEY+'-ref'); } catch(e){}
   }, 400);
@@ -581,17 +577,11 @@ function renderRef(){
   gRef.appendChild(im);
 }
 function render(){
-  let defs = '', inner = '', after = '', mask = '';
-  for (const st of strokes){ if (st._dirty || !st._g){ st._g = buildStroke(st); st._dirty = false; } defs += st._g.defs; mask += st._g.mask; }
-  if (opts.merge){ for (const p of PASSES_IN) for (const st of strokes) inner += st._g[p]; }
-  else { for (const st of strokes) for (const p of PASSES_IN) inner += st._g[p]; }
-  for (const p of PASSES_OUT) for (const st of strokes) after += st._g[p];
-  if (mask){
-    const B = 'x="-60000" y="-60000" width="120000" height="120000"';
-    defs += '<mask id="holesMask" maskUnits="userSpaceOnUse" ' + B + '><rect ' + B + ' fill="#fff"/>' + mask + '</mask>';
-    inner = '<g mask="url(#holesMask)">' + inner + '</g>';
-  }
-  gFire.innerHTML = '<defs>' + defs + '</defs>' + inner + after;
+  let defs = '', out = '';
+  for (const st of strokes){ if (st._dirty || !st._g){ st._g = buildStroke(st); st._dirty = false; } defs += st._g.defs; }
+  if (opts.merge){ for (const p of PASSES) for (const st of strokes) out += st._g[p]; }
+  else { for (const st of strokes) for (const p of PASSES) out += st._g[p]; }
+  gFire.innerHTML = '<defs>' + defs + '</defs>' + out;
   renderUi();
   $('#hint').style.display = strokes.length ? 'none' : '';
 }
@@ -662,13 +652,13 @@ svg.addEventListener('pointerdown', e => {
   const touch = e.pointerType === 'touch';
   if (t === 'draw'){
     const pr = e.pointerType === 'pen' ? (e.pressure || 0.5) : 1;
-    const st = {id: nextId++, pts: [[f(w.x), f(w.y), pr]], closed:false, s: clone(defaults), seed: seedNext, _dirty:true};
+    const st = {id: nextId++, pts: [[f(w.x), f(w.y), pr]], closed:false, s: clone(defaults), seed: seedNext, _dirty:true, _draft:true};
     seedNext = rand32();
     strokes.push(st); selected = null;
     act = {type:'draw', st, id:e.pointerId, touch, sx:w.x, sy:w.y};
     schedule();
   } else if (t === 'ell'){
-    const st = {id: nextId++, pts: [], closed:true, s: clone(defaults), seed: seedNext, _dirty:true};
+    const st = {id: nextId++, pts: [], closed:true, s: clone(defaults), seed: seedNext, _dirty:true, _draft:true};
     seedNext = rand32();
     act = {type:'ell', st, x0:w.x, y0:w.y, id:e.pointerId, touch, added:false};
   } else if (t === 'sel'){
@@ -721,7 +711,7 @@ svg.addEventListener('pointermove', e => {
   } else if (act.type === 'move'){
     const w = toWorld(e.clientX, e.clientY), dx = w.x - act.lx, dy = w.y - act.ly;
     act.lx = w.x; act.ly = w.y;
-    if (Math.abs(dx) + Math.abs(dy) > 0){ for (const q of act.st.pts){ q[0] += dx; q[1] += dy; } act.moved = true; act.st._dirty = true; schedule(); }
+    if (Math.abs(dx) + Math.abs(dy) > 0){ for (const q of act.st.pts){ q[0] += dx; q[1] += dy; } act.moved = true; act.st._draft = true; act.st._dirty = true; schedule(); }
   } else if (act.type === 'erase'){
     eraseAt(toWorld(e.clientX, e.clientY));
   } else if (act.type === 'pan'){
@@ -743,11 +733,11 @@ function endPtr(e){
     const gap = P.length > 2 ? Math.hypot(P[0][0]-P[P.length-1][0], P[0][1]-P[P.length-1][1]) : 1e9;
     const thr = Math.max(st.s.size*0.5, 14/view.z);
     if (P.length > 8 && gap < thr && len > thr*6) st.closed = true;
-    st._dirty = true; schedule(); commit();
+    st._draft = false; st._dirty = true; schedule(); commit();
   } else if (a.type === 'ell'){
-    if (a.added) { schedule(); commit(); }
+    if (a.added) { a.st._draft = false; a.st._dirty = true; schedule(); commit(); }
   } else if (a.type === 'move'){
-    if (a.moved){ for (const q of a.st.pts){ q[0] = f(q[0]); q[1] = f(q[1]); } commit(); }
+    if (a.moved){ for (const q of a.st.pts){ q[0] = f(q[0]); q[1] = f(q[1]); } a.st._draft = false; a.st._dirty = true; schedule(); commit(); }
   } else if (a.type === 'erase'){
     if (a.changed){ syncPanel(); commit(); }
   } else if (a.type === 'pan'){
@@ -803,7 +793,7 @@ panel.innerHTML =
   '<h3>Forma</h3>' + SL.map(slider).join('') +
   '<h3>Contorno e dettagli</h3>' + slider(['outline','Spessore contorno',0,16,.5]) +
   '<div class="inline"><span>Colore contorno</span><input type="color" id="oc" style="width:70px"></div>' +
-  toggle('inner','Linee tra i toni') + slider(['sparks','Scintille',0,1,.01]) + toggle('glow','Bagliore') + toggle('pressure','Pressione della Pencil') +
+  toggle('inner','Linee tra i toni') + slider(['sparks','Brandelli staccati',0,1,.01]) + toggle('glow','Bagliore') + toggle('pressure','Pressione della Pencil') +
   '<div class="btns"><button class="btn" id="reseed">Nuova variante</button><button class="btn" id="delSel">Elimina tratto</button><button class="btn" id="dupSel">Duplica</button></div>' +
   '<h3>Disegno</h3>' + '<div class="row"><div class="top"><label for="stab">Stabilizzatore</label><output id="o_stab"></output></div><input type="range" id="stab" min="0" max="1" step=".01"></div>' +
   '<div class="inline"><span>Fondi i tratti in un unico fuoco</span><button class="chip" data-opt="merge"></button></div>' +
@@ -842,7 +832,7 @@ function syncPanel(){
 }
 function setVal(k, v, doCommit){
   target()[k] = v;
-  if (selected){ defaults[k] = clone(v); selected._dirty = true; schedule(); }
+  if (selected){ defaults[k] = clone(v); selected._draft = !doCommit; selected._dirty = true; schedule(); }
   syncPanel();
   if (doCommit && selected) commit(); else persist();
 }
@@ -877,7 +867,7 @@ panel.addEventListener('input', e => {
 });
 panel.addEventListener('change', e => {
   const i = e.target;
-  if ((i.dataset.k || i.dataset.col !== undefined || i.id === 'oc') && selected) commit();
+  if ((i.dataset.k || i.dataset.col !== undefined || i.id === 'oc') && selected){ selected._draft = false; selected._dirty = true; schedule(); commit(); }
   if (i.id === 'artSel'){ const a = ARTS[i.value]; if (a){ art = {w:a[0], h:a[1], preset:i.value}; renderBoard(); renderRef(); fit(); persist(); } }
 });
 $('#invert').onclick = () => setVal('colors', target().colors.slice().reverse(), true);
@@ -930,7 +920,7 @@ async function saveFile(name, data){
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 $('#saveProj').onclick = () => {
-  const data = JSON.stringify({app:'brace', v:1, strokes: strokes.map(pack), defaults, art, opts, nextId, ref});
+  const data = JSON.stringify({app:'brace', v:1, dv:3, strokes: strokes.map(pack), defaults, art, opts, nextId, ref});
   saveFile('fuoco-progetto.json', data);
 };
 $('#openProj').onclick = () => $('#fileProj').click();
@@ -951,7 +941,7 @@ $('#newProj').onclick = () => {
 };
 function loadState(d){
   strokes = (d.strokes || []).map(o => Object.assign(o, {_dirty:true}));
-  defaults = Object.assign(clone(DEF), d.defaults || {});
+  defaults = Object.assign(clone(DEF), d.dv === 3 ? (d.defaults || {}) : {});
   strokes.forEach(st => st.s = Object.assign(clone(DEF), st.s));
   if (d.art) art = d.art;
   if (d.opts) opts = Object.assign(opts, d.opts);
