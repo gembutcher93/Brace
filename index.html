@@ -242,47 +242,65 @@ function makePerlin(rng){
     return (a + (b-a)*v) * 0.75;
   };
 }
-// fbm con proporzioni auree: ogni ottava è φ volte più fine e φ volte più debole
 function fbmOf(nf){
   return (x, y) => { let a = 0, amp = 1, fr = 1, nrm = 0; for (let o = 0; o < 3; o++){ a += amp*nf(x*fr + o*17.3, y*fr - o*9.1); nrm += amp; fr *= PHI; amp *= IPHI; } return a/nrm; };
 }
 const STY = {
-  anime:   {stretch:2.8, ns:1.0, edge:.55, hole:1.0, rexp:1.25, aspect:.34, corners:true, tw:.55},
-  manga:   {stretch:2.8, ns:1.0, edge:.55, hole:1.0, rexp:1.25, aspect:.34, corners:true, tw:.55},
-  cartoon: {stretch:1.7, ns:1.2, edge:.45, hole:.75, rexp:.6, aspect:.34, corners:false, tw:.75},
-  real:    {stretch:3.2, ns:.8, edge:.8, hole:.8, rexp:1.2, aspect:.26, corners:false, tw:.6}
+  anime:   {stretch:2.8, ns:1.0, edge:.5, hole:1.0, aspect:.24, corners:true},
+  manga:   {stretch:2.8, ns:1.0, edge:.5, hole:1.0, aspect:.24, corners:true},
+  cartoon: {stretch:1.7, ns:1.2, edge:.4, hole:.85, aspect:.3, corners:false},
+  real:    {stretch:3.2, ns:.8, edge:.7, hole:.8, aspect:.2, corners:false}
 };
-function pathChain(x, y, a0, L, R, hook, swayA, ph, sty, wmul){
+const FIELD_STYLES = {anime:1, manga:1, cartoon:1, real:1};
+// profilo di una lingua: piena nel primo terzo, poi si affusola in una punta lunga e sottile
+const tShape = t => Math.max(0.03, Math.pow(1-t, 1.6)*(1 + 2.2*t));
+function pathChain(x, y, a0, L, R, hook, swayA, ph, wmul){
   wmul = wmul || 1;
-  const steps = Math.max(6, Math.min(30, Math.round(L/(R*0.3)))), ds = L/steps, out = [];
+  const steps = Math.max(8, Math.min(36, Math.round(L/(R*0.28)))), ds = L/steps, out = [];
   for (let k = 0; k <= steps; k++){
     const t = k/steps;
-    out.push([x, y, Math.max(R*0.05, R*Math.pow(1-t, sty.rexp)), (1.15 - sty.tw*t)*wmul]);
-    const ang = a0 + swayA*Math.sin(t*Math.PI*PHI + ph)*t*1.4 + hook*t*t*1.7;
+    out.push([x, y, R*tShape(t), (1.05 - 0.25*t)*wmul, 1 - 0.75*t]);
+    const ang = a0 + swayA*Math.sin(t*Math.PI*PHI + ph)*t*1.8 + hook*t*t*2.0;
     x += Math.cos(ang)*ds; y += Math.sin(ang)*ds;
   }
   return out;
 }
-function trailChain(sp, pos, L, R, sg, hook, swayA, ph, sty){
-  const steps = Math.max(8, Math.min(40, Math.round(L/(R*0.3)))), out = [];
+function trailChain(sp, pos, L, R, sg, hook, swayA, ph){
+  const steps = Math.max(8, Math.min(40, Math.round(L/(R*0.28)))), out = [];
   for (let k = 0; k <= steps; k++){
     const t = k/steps;
     let P = pos - t*L;
     P = sp.closed ? ((P % sp.len) + sp.len) % sp.len : Math.max(0, Math.min(sp.len, P));
     const i = idxAt(sp, P), q = sp.p[i], nr = sp.nor[i];
     const off = sg*(R*0.15 + L*(0.06 + 0.22*t*t)) + R*swayA*Math.sin(t*Math.PI*PHI + ph) + hook*L*0.12*t*t;
-    out.push([q[0] + nr[0]*off, q[1] + nr[1]*off, Math.max(R*0.05, R*Math.pow(1-t, sty.rexp)), 1.15 - sty.tw*t]);
+    out.push([q[0] + nr[0]*off, q[1] + nr[1]*off, R*tShape(t), 1.05 - 0.25*t, 1 - 0.75*t]);
   }
   return out;
 }
-// ORDINE: scheletro delle lingue. Posizioni e altezze seguono la sequenza aurea: distribuite ma mai regolari
+// goccia vuota scavata dentro una lingua, che segue la sua curva
+function holeChain(ch, tA, tB, lat){
+  const n = ch.length - 1, i0 = Math.round(tA*n), i1 = Math.round(tB*n);
+  if (i1 - i0 < 3) return null;
+  const hc = [];
+  for (let i = i0; i <= i1; i++){
+    const u = (i - i0)/(i1 - i0), p = ch[i], q = ch[Math.min(n, i+1)], pr = ch[Math.max(0, i-1)];
+    const tx = q[0]-pr[0], ty = q[1]-pr[1], l = Math.hypot(tx, ty) || 1;
+    const rr = p[2]*0.46*Math.pow(Math.sin(Math.PI*u), 0.7)*(1.2 - 0.5*u);
+    hc.push([p[0] - ty/l*p[2]*lat, p[1] + tx/l*p[2]*lat, Math.max(rr, 0.01)]);
+  }
+  return hc;
+}
 function genSkeleton(sp, s, rng, sty){
-  const size = s.size, chains = [], tips = [];
+  const size = s.size, chains = [], tips = [], holes = [];
   const nz = makeNoise(rng), g0 = rng(), g1 = rng();
-  const spacing = Math.max(size*0.15, size*(1.1 - 0.75*s.density));
+  const spacing = Math.max(size*0.13, size*(1.0 - 0.75*s.density));
   const N = Math.max(1, Math.round(sp.len/spacing));
   const ang = s.angle*Math.PI/180, up = [Math.sin(ang), -Math.cos(ang)];
   let alt = 1;
+  const addHoles = (ch, L) => {
+    if (L > size*0.45 && rng() < s.holes*0.95){ const h = holeChain(ch, 0.14 + 0.1*rng(), 0.5 + 0.15*rng(), (rng()-.5)*0.25); if (h) holes.push(h); } else rng();
+    if (L > size*0.9 && rng() < s.holes*0.5){ const h = holeChain(ch, 0.56, 0.8, (rng()-.5)*0.2); if (h) holes.push(h); } else rng();
+  };
   for (let i = 0; i < N; i++){
     const jit = (((g0 + i*IPHI) % 1) - 0.5)*0.9;
     let pos = (i + 0.5 + jit)*sp.len/N;
@@ -294,63 +312,62 @@ function genSkeleton(sp, s, rng, sty){
     const L = size*s.height*e*grp*(0.3 + 1.1*Math.pow(hr, 1.8));
     const r = [rng(), rng(), rng(), rng(), rng(), rng()];
     if (e < 0.05 || L < size*0.08) continue;
-    const R = Math.max(size*0.1, L*sty.aspect*(0.8 + 0.4*r[0]))*Math.min(1.25, Math.sqrt(e) + 0.2);
+    const R = Math.max(size*0.09, L*sty.aspect*(0.8 + 0.4*r[0]))*Math.min(1.25, Math.sqrt(e) + 0.2);
     const lean = nz(pos/(size*2.6) + 40)*(0.2 + 0.5*s.wild);
     const flow = nz(pos/(size*3.3) + 90) >= 0 ? 1 : -1;
     const hs = r[1] < 0.15 + 0.35*s.wild ? (r[2] < .5 ? -1 : 1) : flow;
     const hook = s.curl*hs*(0.5 + 0.6*r[3]);
-    const swayA = (0.15 + 0.45*s.wild)*(0.6 + 0.6*r[4]);
+    const swayA = (0.25 + 0.5*s.wild)*(0.6 + 0.6*r[4]);
     const ph = r[5]*6.283;
     let chain;
-    if (s.dir === 'trail'){ alt = -alt; chain = trailChain(sp, pos, L, R, alt, hook, swayA, ph, sty); }
+    if (s.dir === 'trail'){ alt = -alt; chain = trailChain(sp, pos, L, R, alt, hook, swayA, ph); }
     else {
       let d;
       if (s.dir === 'up') d = up;
       else { let sg = s.side === 0 ? (r[0] < .5 ? 1 : -1) : s.side; sg *= sp.outSign; d = [nr[0]*sg, nr[1]*sg]; }
       const a0 = Math.atan2(d[1], d[0]) + lean;
-      chain = pathChain(q[0] - Math.cos(a0)*R*0.4, q[1] - Math.sin(a0)*R*0.4, a0, L, R, hook, swayA, ph, sty);
+      chain = pathChain(q[0] - Math.cos(a0)*R*0.4, q[1] - Math.sin(a0)*R*0.4, a0, L, R, hook, swayA, ph);
     }
-    chains.push(chain); tips.push(chain);
+    chains.push(chain); tips.push(chain); addHoles(chain, L);
     if (rng() < s.forks && L > size*0.45){
       const t0 = 0.3 + 0.25*rng(), idx = Math.round(t0*(chain.length-1));
       const c = chain[idx], cn = chain[Math.min(chain.length-1, idx+1)];
       const side = rng() < .7 ? -Math.sign(hook || 1) : Math.sign(hook || 1);
       const a = Math.atan2(cn[1]-c[1], cn[0]-c[0]) + side*(0.45 + 0.4*rng());
-      const kid = pathChain(c[0], c[1], a, L*IPHI*IPHI*(1 + 0.4*rng()), c[2]*0.85, -side*s.curl*(0.7 + 0.5*rng()), swayA*0.7, rng()*6.28, sty);
-      chains.push(kid); tips.push(kid);
+      const kL = L*IPHI*IPHI*(1 + 0.4*rng());
+      const kid = pathChain(c[0], c[1], a, kL, c[2]*0.85, -side*s.curl*(0.7 + 0.5*rng()), swayA*0.7, rng()*6.28);
+      chains.push(kid); tips.push(kid); addHoles(kid, kL);
     } else { rng(); rng(); rng(); rng(); rng(); }
   }
-  // CAOS: brandelli che si staccano dalle punte
   const nE = Math.round(tips.length*s.sparks*1.2);
   for (let j = 0; j < nE && tips.length; j++){
     const ch = tips[Math.floor(rng()*tips.length)], a = ch[ch.length-1], b = ch[ch.length-2] || a;
     const an = Math.atan2(a[1]-b[1], a[0]-b[0]) + (rng()-.5)*0.9, gap = size*(0.12 + 0.45*rng());
-    chains.push(pathChain(a[0] + Math.cos(an)*gap, a[1] + Math.sin(an)*gap, an, size*(0.12 + 0.3*rng()), size*(0.045 + 0.05*rng()), (rng()-.5)*1.6, 0.3, rng()*6, sty, 0.95));
+    chains.push(pathChain(a[0] + Math.cos(an)*gap, a[1] + Math.sin(an)*gap, an, size*(0.14 + 0.3*rng()), size*(0.05 + 0.05*rng()), (rng()-.5)*1.6, 0.3, rng()*6, 0.95));
   }
   if (s.base > 0){
     const bc = [];
-    for (let i = 0; i < sp.n; i++){ const q = sp.p[i]; bc.push([q[0], q[1], Math.max(0.01, size*s.base*0.5*envelope(sp.cum[i]/sp.len, s, sp.closed)*presF(q[2], s)), 1.0]); }
+    for (let i = 0; i < sp.n; i++){ const q = sp.p[i]; bc.push([q[0], q[1], Math.max(0.01, size*s.base*0.5*envelope(sp.cum[i]/sp.len, s, sp.closed)*presF(q[2], s)), 1.0, 1.0]); }
     if (sp.closed) bc.push(bc[0]);
     bc.base = true; chains.push(bc);
   }
-  return chains;
+  return {chains, holes};
 }
 function fireField(st, draft){
   const s = st.s, rng = mulberry(st.seed), sp = spineOf(st), sty = STY[s.style], size = s.size;
   st._sp = sp;
-  const chains = genSkeleton(sp, s, rng, sty);
+  const {chains, holes} = genSkeleton(sp, s, rng, sty);
   st._hits = []; for (const ch of chains) if (!ch.base) for (let i = 0; i < ch.length; i += 3) st._hits.push(ch[i]);
   const nf = makePerlin(rng), fbm = fbmOf(nf);
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
   for (const ch of chains) for (const p of ch){ x0 = Math.min(x0, p[0]-p[2]); y0 = Math.min(y0, p[1]-p[2]); x1 = Math.max(x1, p[0]+p[2]); y1 = Math.max(y1, p[1]+p[2]); }
   const area = Math.max(1, (x1-x0)*(y1-y0));
-  const h = Math.max(size/(draft ? 8 : 14), Math.sqrt(area/(draft ? 40000 : 180000)));
+  const h = Math.max(size/(draft ? 9 : 16), Math.sqrt(area/(draft ? 45000 : 200000)));
   x0 -= h*3; y0 -= h*3; x1 += h*3; y1 += h*3;
   const nx = Math.ceil((x1-x0)/h) + 1, ny = Math.ceil((y1-y0)/h) + 1, NN = nx*ny;
-  const D = new Float32Array(NN), FX = new Float32Array(NN), FY = new Float32Array(NN);
-  const tmp = new Float32Array(NN), tdx = new Float32Array(NN), tdy = new Float32Array(NN), touched = [];
-  for (const ch of chains){
-    touched.length = 0;
+  const D = new Float32Array(NN), FX = new Float32Array(NN), FY = new Float32Array(NN), HS = new Float32Array(NN), HN = new Float32Array(NN);
+  const tmp = new Float32Array(NN), tdx = new Float32Array(NN), tdy = new Float32Array(NN), tht = new Float32Array(NN), touched = [];
+  const splat = (ch, onCell) => {
     for (let k = 0; k < ch.length - 1; k++){
       const a = ch[k], b = ch[k+1], R = Math.max(a[2], b[2]);
       const sx = b[0]-a[0], sy = b[1]-a[1], sl2 = sx*sx + sy*sy || 1e-9, sl = Math.sqrt(sl2);
@@ -363,17 +380,26 @@ function fireField(st, draft){
           let t = ((x-a[0])*sx + (y-a[1])*sy)/sl2; t = t < 0 ? 0 : t > 1 ? 1 : t;
           const rr = a[2] + (b[2]-a[2])*t, dx = x - (a[0] + sx*t), dy = y - (a[1] + sy*t), d2 = dx*dx + dy*dy;
           if (d2 >= rr*rr) continue;
-          const xx = d2/(rr*rr), kk = (1-xx)*(1-xx)*(a[3] + (b[3]-a[3])*t), c = j*nx + i;
-          if (kk > tmp[c]){ if (tmp[c] === 0) touched.push(c); tmp[c] = kk; tdx[c] = sx/sl; tdy[c] = sy/sl; }
+          const xx = d2/(rr*rr);
+          onCell(j*nx + i, (1-xx)*(1-xx), a, b, t, sx/sl, sy/sl);
         }
       }
     }
+  };
+  for (const ch of chains){
+    touched.length = 0;
+    splat(ch, (c, kb, a, b, t, ux, uy) => {
+      const kk = kb*(a[3] + (b[3]-a[3])*t);
+      if (kk > tmp[c]){ if (tmp[c] === 0) touched.push(c); tmp[c] = kk; tdx[c] = ux; tdy[c] = uy; tht[c] = a[4] + (b[4]-a[4])*t; }
+    });
     const useDir = !ch.base;
-    for (const c of touched){ D[c] += tmp[c]; if (useDir){ FX[c] += tdx[c]*tmp[c]; FY[c] += tdy[c]*tmp[c]; } tmp[c] = 0; }
+    for (const c of touched){ D[c] += tmp[c]; HS[c] += tmp[c]*tht[c]; if (useDir){ FX[c] += tdx[c]*tmp[c]; FY[c] += tdy[c]*tmp[c]; } tmp[c] = 0; }
   }
+  for (const hc of holes) splat(hc, (c, kb) => { if (kb > HN[c]) HN[c] = kb; });
   const ang = s.angle*Math.PI/180, defDir = s.dir === 'up' ? [Math.sin(ang), -Math.cos(ang)] : [0, -1];
   const S = size*sty.ns, str = sty.stretch, chaos = s.wild;
   const edgeA = sty.edge*(0.35 + 0.9*chaos), holeA = s.holes*sty.hole;
+  const E = new Float32Array(NN);
   for (let c = 0; c < NN; c++){
     const v0 = D[c]; if (v0 < 0.01) continue;
     const i = c % nx, j = (c - i)/nx, x = x0 + i*h, y = y0 + j*h;
@@ -384,14 +410,15 @@ function fireField(st, draft){
     const n = fbm(u + wu, v + wv);
     const rn = 1 - Math.min(1, Math.abs(fbm(u*1.2 + wu + 21, v*1.2 + wv - 13))*2.4);
     let val = v0*(1 + n*edgeA);
-    val -= holeA*rn*rn*Math.min(val, 1.2)*0.95;
-    D[c] = val;
+    val -= holeA*rn*rn*Math.min(val, 1.2)*0.3;
+    if (HN[c] > 0) val *= Math.max(0, 1 - HN[c]*(0.55 + 0.6*holeA)*(1 + 0.35*n));
+    D[c] = val; E[c] = val*(HS[c]/v0);
   }
-  return {F:D, nx, ny, x0, y0, h};
+  return {F:D, E, nx, ny, x0, y0, h};
 }
-// marching squares → anelli chiusi
-function contour(G, t){
-  const {F, nx, ny, x0, y0, h} = G, pts = new Map(), adj = new Map();
+function contour(G, t, F){
+  F = F || G.F;
+  const {nx, ny, x0, y0, h} = G, pts = new Map(), adj = new Map();
   const H = (i, j) => { const k = (j*nx + i)*2; if (!pts.has(k)){ const a = F[j*nx+i], b = F[j*nx+i+1]; pts.set(k, [x0 + h*(i + (t-a)/(b-a)), y0 + h*j]); } return k; };
   const V = (i, j) => { const k = (j*nx + i)*2 + 1; if (!pts.has(k)){ const a = F[j*nx+i], b = F[(j+1)*nx+i]; pts.set(k, [x0 + h*i, y0 + h*(j + (t-a)/(b-a))]); } return k; };
   const link = (a, b) => { (adj.get(a) || adj.set(a, []).get(a)).push(b); (adj.get(b) || adj.set(b, []).get(b)).push(a); };
@@ -428,20 +455,20 @@ function loopD(P, corners, h){
   let n = P.length;
   let area = 0; for (let i = 0; i < n; i++){ const a = P[i], b = P[(i+1)%n]; area += a[0]*b[1] - b[0]*a[1]; }
   area /= 2; if (Math.abs(area) < h*h*1.2) return '';
-  const Q = []; for (let i = 0; i < n; i++){ const p = P[i], q = P[(i+1)%n]; if (!Q.length || Math.hypot(p[0]-Q[Q.length-1][0], p[1]-Q[Q.length-1][1]) > h*0.3) Q.push(p); }
+  const Q = []; for (let i = 0; i < n; i++){ const p = P[i]; if (!Q.length || Math.hypot(p[0]-Q[Q.length-1][0], p[1]-Q[Q.length-1][1]) > h*0.3) Q.push(p); }
   n = Q.length; if (n < 3) return '';
-  let S = Q.map((p, i) => { const a = Q[(i-1+n)%n], b = Q[(i+1)%n]; return [(a[0] + 2*p[0] + b[0])/4, (a[1] + 2*p[1] + b[1])/4]; });
-  S = S.map((p, i) => { const a = S[(i-1+n)%n], b = S[(i+1)%n]; return [(a[0] + 2*p[0] + b[0])/4, (a[1] + 2*p[1] + b[1])/4]; });
-  S = S.map((p, i) => { const a = S[(i-1+n)%n], b = S[(i+1)%n]; return [(a[0] + 2*p[0] + b[0])/4, (a[1] + 2*p[1] + b[1])/4]; });
+  const lap = A => A.map((p, i) => { const a = A[(i-1+n)%n], b = A[(i+1)%n]; return [(a[0] + 2*p[0] + b[0])/4, (a[1] + 2*p[1] + b[1])/4]; });
+  let S = lap(lap(lap(Q)));
   const sgn = area > 0 ? 1 : -1, cor = new Array(n).fill(false);
   if (corners && n > 6){
     for (let i = 0; i < n; i++){
       const a = S[(i-2+n)%n], p = S[i], b = S[(i+2)%n];
       const ux = p[0]-a[0], uy = p[1]-a[1], vx = b[0]-p[0], vy = b[1]-p[1];
-      const cr = ux*vy - uy*vx, dt = ux*vx + uy*vy, turn = Math.atan2(cr, dt);
+      const cr = ux*vy - uy*vx, turn = Math.atan2(cr, ux*vx + uy*vy);
       if (Math.abs(turn) > 0.9 && Math.sign(cr) === sgn){
         const pr = S[(i-1+n)%n], nx2 = S[(i+1)%n];
-        if (Math.abs(turn) >= Math.abs(Math.atan2((p[0]-pr[0])*(nx2[1]-p[1]) - (p[1]-pr[1])*(nx2[0]-p[0]), (p[0]-pr[0])*(nx2[0]-p[0]) + (p[1]-pr[1])*(nx2[1]-p[1]))) * 0.5){
+        const t1 = Math.abs(Math.atan2((p[0]-pr[0])*(nx2[1]-p[1]) - (p[1]-pr[1])*(nx2[0]-p[0]), (p[0]-pr[0])*(nx2[0]-p[0]) + (p[1]-pr[1])*(nx2[1]-p[1])));
+        if (Math.abs(turn) >= t1*0.5){
           cor[i] = true;
           const mx = (a[0]+b[0])/2, my = (a[1]+b[1])/2;
           S[i] = [p[0] + (p[0]-mx)*0.6, p[1] + (p[1]-my)*0.6];
@@ -458,13 +485,209 @@ function loopD(P, corners, h){
   }
   return d + 'Z';
 }
+function crOpen(P){
+  let d = ''; const n = P.length;
+  for (let i = 0; i < n-1; i++){
+    const p0 = P[Math.max(0,i-1)], p1 = P[i], p2 = P[i+1], p3 = P[Math.min(n-1,i+2)];
+    d += 'C' + pt([p1[0]+(p2[0]-p0[0])/6, p1[1]+(p2[1]-p0[1])/6]) + ' ' + pt([p2[0]-(p3[0]-p1[0])/6, p2[1]-(p3[1]-p1[1])/6]) + ' ' + pt(p2);
+  }
+  return d;
+}
+// nastro a larghezza variabile attorno a una linea centrale: punte affilate alle estremità
+function ribbonD(C, W, off){
+  const n = C.length - 1, Lf = [], Rt = [];
+  for (let k = 0; k <= n; k++){
+    const a = C[Math.max(0,k-1)], b = C[Math.min(n,k+1)];
+    const tx = b[0]-a[0], ty = b[1]-a[1], l = Math.hypot(tx, ty) || 1, nx = -ty/l, ny = tx/l;
+    const o = off ? off[k] : 0, cx = C[k][0] + nx*o, cy = C[k][1] + ny*o;
+    Lf.push([cx + nx*W[k], cy + ny*W[k]]); Rt.push([cx - nx*W[k], cy - ny*W[k]]);
+  }
+  return 'M' + pt(Lf[0]) + crOpen(Lf) + 'L' + pt(Rt[n]) + crOpen(Rt.slice().reverse()) + 'Z';
+}
+// ---------- stile giapponese: lingue lunghe e affusolate, con venature ----------
+function buildJFire(st){
+  const s = st.s, rng = mulberry(st.seed), sp = spineOf(st), size = s.size;
+  st._sp = sp; st._hits = [];
+  const nz = makeNoise(rng), g0 = rng(), g1 = rng();
+  const spacing = Math.max(size*0.1, size*(0.85 - 0.65*s.density));
+  const N = Math.max(1, Math.round(sp.len/spacing));
+  const ang = s.angle*Math.PI/180, up = [Math.sin(ang), -Math.cos(ang)];
+  const T = [];
+  const make = (x, y, a0, L, R, hook, sway, ph) => {
+    const steps = 40, C = [], ds = L/steps;
+    for (let k = 0; k <= steps; k++){
+      const t = k/steps; C.push([x, y]);
+      const a = a0 + sway*Math.sin(t*Math.PI*2.1 + ph)*(0.35 + 0.65*t) + hook*t*t*1.15;
+      x += Math.cos(a)*ds; y += Math.sin(a)*ds;
+    }
+    return {C, L, R, hook};
+  };
+  let alt = 1;
+  for (let i = 0; i < N; i++){
+    const jit = (((g0 + i*IPHI) % 1) - 0.5)*0.9;
+    let pos = (i + 0.5 + jit)*sp.len/N;
+    pos = sp.closed ? ((pos % sp.len) + sp.len) % sp.len : Math.max(0, Math.min(sp.len, pos));
+    const k = idxAt(sp, pos), q = sp.p[k], nr = sp.nor[k], tn = sp.tan[k];
+    const e = envelope(pos/sp.len, s, sp.closed)*presF(q[2], s);
+    const hr = (g1 + i*PHI*PHI) % 1, grp = 0.65 + 0.45*(nz(pos/(size*2))*0.5 + 0.5);
+    const L = size*s.height*e*grp*(0.35 + 1.0*Math.pow(hr, 1.6));
+    const r = [rng(), rng(), rng(), rng(), rng()];
+    if (e < 0.05 || L < size*0.35) continue;
+    let d;
+    if (s.dir === 'up') d = up;
+    else if (s.dir === 'side'){ let sg = s.side === 0 ? (r[0] < .5 ? 1 : -1) : s.side; sg *= sp.outSign; d = [nr[0]*sg, nr[1]*sg]; }
+    else { alt = -alt; d = [-tn[0] + nr[0]*0.35*alt, -tn[1] + nr[1]*0.35*alt]; }
+    const fan = sp.closed ? 0 : (pos/sp.len - 0.5)*0.5;
+    const a0 = Math.atan2(d[1], d[0]) + fan + nz(pos/(size*2.4) + 30)*(0.15 + 0.4*s.wild);
+    const flow = nz(pos/(size*3) + 70) >= 0 ? 1 : -1;
+    const hs = r[1] < 0.2 + 0.35*s.wild ? (r[2] < .5 ? -1 : 1) : flow;
+    const hook = s.curl*hs*(0.55 + 0.6*r[3]);
+    const R = (L*0.11 + size*0.045)*(0.8 + 0.4*r[4]);
+    const tg = make(q[0], q[1], a0, L, R, hook, (0.18 + 0.3*s.wild)*(r[0] < .5 ? 1 : -1), r[0]*6.28);
+    T.push(tg);
+    if (rng() < s.forks && L > size*0.5){
+      const t0 = 0.28 + 0.22*rng(), ki = Math.round(t0*40), c = tg.C[ki], cn = tg.C[ki+1];
+      const side = rng() < .7 ? -Math.sign(hook || 1) : Math.sign(hook || 1);
+      const a = Math.atan2(cn[1]-c[1], cn[0]-c[0]) + side*(0.5 + 0.35*rng());
+      T.push(make(c[0], c[1], a, L*(0.38 + 0.22*rng()), R*0.6, -side*s.curl*(0.9 + 0.5*rng()), 0.15, rng()*6.28));
+    } else { rng(); rng(); rng(); rng(); rng(); }
+  }
+  T.sort((a, b) => b.L - a.L);
+  const four = s.tones === 4, cols = s.colors;
+  const body = cols[1], dark = cols[0], warm = four ? cols[2] : cols[3], light = cols[3];
+  const ow = s.outline, oc = s.oc;
+  let o = '';
+  for (const tg of T){
+    const n = tg.C.length - 1, W = [];
+    for (let k = 0; k <= n; k++){
+      const t = k/n, ramp = t < 0.12 ? 0.25 + 0.75*Math.sin(t/0.12*Math.PI/2) : 1;
+      W.push(tg.R*Math.max(0, Math.pow(1-t, 1.4)*(1 + 1.4*t))*ramp);
+    }
+    W[n] = 0;
+    const bd = ribbonD(tg.C, W);
+    if (ow > 0) o += '<path d="' + bd + '" fill="' + oc + '" stroke="' + oc + '" stroke-width="' + f(2*ow) + '" stroke-linejoin="round"/>';
+    o += '<path d="' + bd + '" fill="' + body + '"/>';
+    const vein = (t0, t1, offF, wF, col) => {
+      const k0 = Math.round(t0*n), k1 = Math.round(t1*n), C = [], Wv = [], Of = [];
+      for (let k = k0; k <= k1; k++){ const u = (k-k0)/(k1-k0); C.push(tg.C[k]); Wv.push(W[k]*wF*Math.pow(Math.sin(Math.PI*u), 0.6)); Of.push(W[k]*offF); }
+      return '<path d="' + ribbonD(C, Wv, Of) + '" fill="' + col + '"/>';
+    };
+    const sd = Math.sign(tg.hook || 1);
+    o += vein(0.1, 0.9, 0.42*sd, 0.22, dark);
+    o += vein(0.18, 0.78, -0.3*sd, 0.13, warm);
+    if (four) o += vein(0.3, 0.68, -0.55*sd, 0.07, light);
+    for (let k = 0; k <= n; k += 5) st._hits.push(tg.C[k]);
+  }
+  return {defs:'', glow:'', outline:'', f0:o, f1:'', f2:'', f3:'', sparks:''};
+}
+// ---------- nuvole giapponesi: sbuffi con spirali e code affusolate ----------
+function buildCloud(st){
+  const s = st.s, rng = mulberry(st.seed), sp = spineOf(st), size = s.size;
+  st._sp = sp; st._hits = [];
+  const ang = s.angle*Math.PI/180, upv = [Math.sin(ang), -Math.cos(ang)];
+  const topAt = i => s.dir === 'up' ? upv : (() => { const sg = (s.side || 1)*sp.outSign; return [sp.nor[i][0]*sg, sp.nor[i][1]*sg]; })();
+  const fill = s.colors[1], line = s.colors[3], back = s.tones === 4 ? s.colors[2] : s.colors[1];
+  const lw = Math.max(1.5, size*0.035), ow = s.outline, oc = s.oc;
+  const puffs = [];
+  const spacing = size*(0.95 - 0.45*s.density);
+  let pos = spacing*0.3, i = 0;
+  while (pos <= sp.len && i < 400){
+    const k = idxAt(sp, pos), q = sp.p[k], tp = topAt(k);
+    const e = envelope(pos/sp.len, s, sp.closed)*presF(q[2], s);
+    const r = size*0.5*(0.4 + 0.6*e)*(0.8 + 0.4*((i*IPHI + 0.3) % 1))*(1 + (rng()-.5)*0.3*s.wild);
+    puffs.push({x: q[0] + tp[0]*r*0.1, y: q[1] + tp[1]*r*0.1, r, row:0, tp, k});
+    pos += spacing*(0.8 + 0.4*rng()); i++;
+  }
+  if (sp.len < spacing*0.5 || !puffs.length){ const q = sp.p[0], tp = topAt(0); puffs.length = 0; puffs.push({x:q[0], y:q[1], r:size*0.5, row:0, tp, k:0}); }
+  const rows = [puffs.slice()];
+  const extraRows = s.height > 1.2 ? (s.height > 2.2 ? 2 : 1) : 0;
+  for (let rI = 1; rI <= extraRows; rI++){
+    const prev = rows[rI-1], row = [];
+    for (let j = 0; j < prev.length - 1; j++){
+      if (rng() > 0.45 + 0.4*s.density) continue;
+      const a = prev[j], b = prev[j+1], rr = (a.r + b.r)/2*(0.72 + 0.25*rng());
+      const tp = a.tp;
+      row.push({x: (a.x+b.x)/2 + tp[0]*rr*0.85, y: (a.y+b.y)/2 + tp[1]*rr*0.85, r: rr, row: rI, tp, k: a.k});
+    }
+    if (!row.length) break;
+    rows.push(row);
+  }
+  const order = []; for (let rI = rows.length-1; rI >= 0; rI--) for (const p of rows[rI]) order.push(p);
+  // code affusolate alle estremità
+  const tails = [];
+  if (!sp.closed && sp.n > 2){
+    for (const end of [0, 1]){
+      const pf = end ? puffs[puffs.length-1] : puffs[0], k = pf.k, tn = sp.tan[k], tp = pf.tp;
+      let dir = [-tp[1], tp[0]]; const tsg = end ? 1 : -1;
+      if (dir[0]*tn[0]*tsg + dir[1]*tn[1]*tsg < 0) dir = [-dir[0], -dir[1]];
+      const Lt = size*(0.9 + 1.6*s.base), steps = 30, C = [], W = [];
+      let x = pf.x - tp[0]*pf.r*0.45, y = pf.y - tp[1]*pf.r*0.45, a = Math.atan2(dir[1], dir[0]);
+      const curl = (dir[0]*tp[1] - dir[1]*tp[0]) > 0 ? -1 : 1;
+      for (let j = 0; j <= steps; j++){
+        const t = j/steps; C.push([x, y]); W.push(pf.r*0.4*Math.pow(1-t, 1.2)*(1 + 0.5*t*(1-t)));
+        a += curl*(0.006 + s.curl*0.05*t*t); x += Math.cos(a)*Lt/steps; y += Math.sin(a)*Lt/steps;
+      }
+      W[steps] = 0; tails.push({C, W});
+    }
+  }
+  const drawn = [];
+  const insideDrawn = (x, y) => { for (const d of drawn){ if (Math.hypot(x - d.x, y - d.y) < d.r - lw*0.6) return true; } return false; };
+  let o = '';
+  if (ow > 0){
+    for (const tl of tails) o += '<path d="' + ribbonD(tl.C, tl.W) + '" fill="' + oc + '" stroke="' + oc + '" stroke-width="' + f(2*ow) + '" stroke-linejoin="round"/>';
+    for (const p of order) o += '<circle cx="' + f(p.x) + '" cy="' + f(p.y) + '" r="' + f(p.r + ow) + '" fill="' + oc + '"/>';
+  }
+  for (const tl of tails){
+    o += '<path d="' + ribbonD(tl.C, tl.W) + '" fill="' + fill + '"/>';
+    const n = tl.C.length - 1, C = [], Wv = [];
+    for (let j = Math.round(n*0.08); j <= Math.round(n*0.8); j++){ const u = (j - n*0.08)/(n*0.72); C.push(tl.C[j]); Wv.push(lw*0.5*Math.pow(Math.sin(Math.PI*Math.min(1, Math.max(0, u))), 0.5)); }
+    if (C.length > 2) o += '<path d="' + ribbonD(C, Wv) + '" fill="' + line + '"/>';
+  }
+  for (const p of order){
+    o += '<circle cx="' + f(p.x) + '" cy="' + f(p.y) + '" r="' + f(p.r) + '" fill="' + (p.row ? back : fill) + '"/>';
+    // linee di separazione: solo dove lo sbuffo si appoggia su quelli dietro
+    const M = 90, inside = [];
+    for (let j = 0; j < M; j++){ const a = j/M*Math.PI*2; inside.push(insideDrawn(p.x + Math.cos(a)*p.r, p.y + Math.sin(a)*p.r)); }
+    if (inside.some(v => v) && !inside.every(v => v)){
+      let st0 = inside.findIndex((v, j) => !v && inside[(j+1)%M]);
+      for (let c = 0, j = (st0+1)%M; c < M; c++, j = (j+1)%M){
+        if (inside[j] && !inside[(j-1+M)%M]){
+          let e = j; while (inside[(e+1)%M] && e - j < M) e++;
+          const a0 = j/M*Math.PI*2, a1 = (e+1)/M*Math.PI*2, span = a1 - a0;
+          const rr = p.r - lw*0.5;
+          o += '<path d="M' + pt([p.x + Math.cos(a0)*rr, p.y + Math.sin(a0)*rr]) + 'A' + f(rr) + ' ' + f(rr) + ' 0 ' + (span > Math.PI ? 1 : 0) + ' 1 ' + pt([p.x + Math.cos(a1)*rr, p.y + Math.sin(a1)*rr]) + '" fill="none" stroke="' + line + '" stroke-width="' + f(lw) + '" stroke-linecap="round"/>';
+        }
+      }
+    } else if (inside.every(v => v)){
+      o += '<circle cx="' + f(p.x) + '" cy="' + f(p.y) + '" r="' + f(p.r - lw*0.5) + '" fill="none" stroke="' + line + '" stroke-width="' + f(lw) + '"/>';
+    }
+    // spirale
+    if (p.r > size*0.18 && (p.row === 0 || rng() < 0.55)){
+      const sg = rng() < .5 ? 1 : -1, turns = 0.75 + s.curl*0.7;
+      const base = Math.atan2(-p.tp[1], -p.tp[0]) + sg*(0.6 + 0.6*rng());
+      const C = [], Wv = [], steps = 46;
+      for (let j = 0; j <= steps; j++){
+        const u = j/steps, a = base + sg*u*turns*Math.PI*2, rr = p.r*(0.84 - 0.62*Math.pow(u, 0.85));
+        C.push([p.x + Math.cos(a)*rr, p.y + Math.sin(a)*rr]);
+        Wv.push(lw*0.55*(1 - 0.55*u)*Math.min(1, u*6 + 0.25));
+      }
+      Wv[steps] = lw*0.15;
+      o += '<path d="' + ribbonD(C, Wv) + '" fill="' + line + '"/>';
+    }
+    drawn.push(p); st._hits.push([p.x, p.y]);
+  }
+  return {defs:'', glow:'', outline:'', f0:o, f1:'', f2:'', f3:'', sparks:''};
+}
 function buildStroke(st){
-  const s = st.s, id = st.id, four = s.tones === 4;
+  const s = st.s;
+  if (s.style === 'jfire') return buildJFire(st);
+  if (s.style === 'cloud') return buildCloud(st);
+  const id = st.id, four = s.tones === 4;
   const cols = four ? s.colors : [s.colors[0], s.colors[2], s.colors[3]];
   const T0 = 0.2, TH = four ? [T0, T0*PHI, T0*PHI*PHI, T0*PHI*PHI*PHI] : [T0, T0*Math.pow(PHI, 1.5), T0*PHI*PHI*PHI];
   const G = fireField(st, !!st._draft);
-  const style = s.style, sty = STY[style], real = style === 'real';
-  const Ls = TH.map(t => contour(G, t).map(l => loopD(l, sty.corners, G.h)).join(''));
+  const sty = STY[s.style], real = s.style === 'real';
+  const Ls = TH.map((t, k) => contour(G, t, k ? G.E : G.F).map(l => loopD(l, sty.corners, G.h)).join(''));
   const ow = real ? 0 : s.outline, oc = s.oc, join = sty.corners ? 'miter' : 'round';
   const g = {defs:'', glow:'', outline:'', f0:'', f1:'', f2:'', f3:'', sparks:''};
   const P = (d, fill, extra) => d ? '<path d="' + d + '" fill="' + fill + '" fill-rule="evenodd"' + extra + '/>' : '';
@@ -500,7 +723,9 @@ const PALS = [
   ['Blu', ['#0b2a7a','#1f6fe0','#5ec8ff','#eafcff']],
   ['Tossico', ['#0d3b12','#2c9a2a','#8be236','#f2ffc4']],
   ['Viola', ['#2c0b4d','#6d23b8','#c05cff','#f7e0ff']],
-  ['Inchiostro', ['#141414','#f6f6f6','#141414','#f6f6f6']]
+  ['Inchiostro', ['#141414','#f6f6f6','#141414','#f6f6f6']],
+  ['Giappone', ['#7d0f0f','#e3361c','#f5862b','#ffd38c']],
+  ['Nuvola', ['#cf7a2a','#f4ad62','#f8c995','#fffaf0']]
 ];
 const DEF = {style:'anime', dir:'up', angle:0, side:1, tones:4, colors: PALS[0][1].slice(), size:120, height:2.4, density:.5, wild:.5, curl:.6, forks:.4, holes:.6, base:.35, taper:.45, outline:3, oc:'#1c0906', inner:false, sparks:.3, glow:false, pressure:true};
 const ARTS = {ipad:[2048,2732], a4:[2480,3508], sq:[2048,2048], land:[2732,2048]};
@@ -579,8 +804,14 @@ function renderRef(){
 function render(){
   let defs = '', out = '';
   for (const st of strokes){ if (st._dirty || !st._g){ st._g = buildStroke(st); st._dirty = false; } defs += st._g.defs; }
-  if (opts.merge){ for (const p of PASSES) for (const st of strokes) out += st._g[p]; }
-  else { for (const st of strokes) for (const p of PASSES) out += st._g[p]; }
+  // i fuochi "a campo" consecutivi si fondono; giapponese e nuvole restano a strati nell'ordine in cui li disegni
+  let run = [];
+  const flush = () => { if (!run.length) return; if (opts.merge){ for (const p of PASSES) for (const st of run) out += st._g[p]; } else { for (const st of run) for (const p of PASSES) out += st._g[p]; } run = []; };
+  for (const st of strokes){
+    if (FIELD_STYLES[st.s.style]) run.push(st);
+    else { flush(); for (const p of PASSES) out += st._g[p]; }
+  }
+  flush();
   gFire.innerHTML = '<defs>' + defs + '</defs>' + out;
   renderUi();
   $('#hint').style.display = strokes.length ? 'none' : '';
@@ -782,7 +1013,7 @@ const toggle = (k, l) => '<div class="inline"><span>' + l + '</span><button clas
 const panel = $('#panel');
 panel.innerHTML =
   '<div class="target" id="target"></div>' +
-  '<h3>Stile</h3>' + chipRow('style', [['anime','Anime'],['cartoon','Cartoon'],['manga','Manga'],['real','Realistico']]) +
+  '<h3>Stile</h3>' + chipRow('style', [['anime','Anime'],['cartoon','Cartoon'],['manga','Manga'],['real','Realistico'],['jfire','Giappone'],['cloud','Nuvole']]) +
   '<h3>Direzione delle fiamme</h3>' + chipRow('dir', [['up','Verso l\u2019alto'],['side','Di lato'],['trail','Scia']]) +
   '<div id="angleWrap">' + slider(['angle','Angolo',-180,180,1]) + '</div>' +
   '<div id="sideWrap" style="margin-top:10px">' + chipRow('side', [['1','Esterno'],['-1','Interno'],['0','Entrambi']]) + '</div>' +
@@ -844,9 +1075,11 @@ panel.addEventListener('click', e => {
     if (k === 'side' || k === 'tones') v = +v;
     if (k === 'style'){
       const s = target();
-      if (v === 'manga' && s.style !== 'manga'){ s.colors = PALS[6][1].slice(); s.oc = '#141414'; }
-      else if (s.style === 'manga' && v !== 'manga' && s.colors.join() === PALS[6][1].join()){ s.colors = PALS[0][1].slice(); s.oc = DEF.oc; }
-      if (selected){ defaults.colors = s.colors.slice(); defaults.oc = s.oc; }
+      const PRE = {manga:[6,'#141414',3], jfire:[7,'#3a0606',1.5], cloud:[8,'#7a3b10',0]};
+      const isPreset = PALS.some(p => p[1].join() === s.colors.join());
+      if (PRE[v] && s.style !== v){ s.colors = PALS[PRE[v][0]][1].slice(); s.oc = PRE[v][1]; s.outline = PRE[v][2]; }
+      else if (!PRE[v] && PRE[s.style] && isPreset){ s.colors = PALS[0][1].slice(); s.oc = DEF.oc; s.outline = DEF.outline; }
+      if (selected){ defaults.colors = s.colors.slice(); defaults.oc = s.oc; defaults.outline = s.outline; }
     }
     setVal(k, v, true); return;
   }
